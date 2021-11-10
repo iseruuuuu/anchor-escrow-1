@@ -28,7 +28,7 @@ describe("anchor-escrow", () => {
   // 今回の主役のアカウント。送る側のアカウント。
   const initializerMainAccount = anchor.web3.Keypair.generate();
   // 今回の主役のアカウント。受け取る側のアカウント。
-  const tokerMainAccount = anchor.web3.Keypair.generate();
+  const takerMainAccount = anchor.web3.Keypair.generate();
   // Tokenアカウントを作成するアカウント。
   const mintAuthority = anchor.web3.Keypair.generate();
   // escrowアカウント
@@ -53,7 +53,7 @@ describe("anchor-escrow", () => {
           }),
           SystemProgram.transfer({
             fromPubkey: payer.publicKey,
-            toPubkey: tokerMainAccount.publicKey,
+            toPubkey: takerMainAccount.publicKey,
             lamports: 1000000000,
           })
         );
@@ -79,9 +79,9 @@ describe("anchor-escrow", () => {
     initializerTokenAccountB = await mintB.createAccount(initializerMainAccount.publicKey);
 
     // トークンAのトークンアカウントを作成。takerにトークンAのトークンアカウントをアサインする
-    takerTokenAccountA = await mintA.createAccount(tokerMainAccount.publicKey);
+    takerTokenAccountA = await mintA.createAccount(takerMainAccount.publicKey);
     // トークンBのトークンアカウントを作成。takerにトークンBのトークンアカウントをアサインする
-    takerTokenAccountB = await mintB.createAccount(tokerMainAccount.publicKey);
+    takerTokenAccountB = await mintB.createAccount(takerMainAccount.publicKey);
 
     // トークンAをinitializerにinitializerAmount枚発行
     await mintA.mintTo(initializerTokenAccountA, mintAuthority.publicKey, [mintAuthority], initializerAmount);
@@ -104,7 +104,7 @@ describe("anchor-escrow", () => {
     const [_vault_account_pda, _vault_account_bump] = await PublicKey.findProgramAddress(
       // このseedを使ってProgram側ではkeyを復元する
       [Buffer.from(anchor.utils.bytes.utf8.encode("token-seed"))],
-      program.id
+      program.programId
     );
     vault_account_pda = _vault_account_pda;
     vault_account_bump = _vault_account_bump;
@@ -114,7 +114,7 @@ describe("anchor-escrow", () => {
     const [_vault_authority_pda, _vault_authority_bump] = await PublicKey.findProgramAddress(
       // このseedを使ってProgram側ではkeyを復元する
       [Buffer.from(anchor.utils.bytes.utf8.encode("escrow"))],
-      program.id
+      program.programId
     );
     vault_authority_pda = _vault_authority_pda;
 
@@ -140,7 +140,7 @@ describe("anchor-escrow", () => {
           tokenProgram: TOKEN_PROGRAM_ID,
         },
         instructions: [await program.account.escrowAccount.createInstruction(escrowAccount)],
-        signers: [escrowAccount, initializerMainAccount],
+        signers: [escrowAccount, initializerMainAccount], // なんでsignersはこの２つなのかわからん
       }
     );
 
@@ -149,10 +149,83 @@ describe("anchor-escrow", () => {
 
     // これは何？ => initializerMainAccountからAuthorityをvault(PDA)にセットされてるかの確認
     assert.ok(_vault.owner.equals(vault_authority_pda));
-    assert.ok(_escrowAccount.initializeKey.equals(initializerMainAccount.publicKey));
+    assert.ok(_escrowAccount.initializerKey.equals(initializerMainAccount.publicKey));
     assert.ok(_escrowAccount.initializerAmount.toNumber() == initializerAmount);
     assert.ok(_escrowAccount.takerAmount.toNumber() == takerAmount);
     assert.ok(_escrowAccount.initializerDepositTokenAccount.equals(initializerTokenAccountA));
     assert.ok(_escrowAccount.initializerReceiveTokenAccount.equals(initializerTokenAccountB));
+  });
+
+  it("Exchange escrow", async () => {
+    await program.rpc.exchange({
+      accounts: {
+        taker: takerMainAccount.publicKey,
+        takerDepositTokenAccount: takerTokenAccountB,
+        takerReceiveTokenAccount: takerTokenAccountA,
+        initializerDepositTokenAccount: initializerTokenAccountA,
+        initializerReceiveTokenAccount: initializerTokenAccountB,
+        initializer: initializerMainAccount.publicKey,
+        escrowAccount: escrowAccount.publicKey,
+        vaultAccount: vault_account_pda,
+        vaultAuthority: vault_authority_pda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      },
+      signers: [takerMainAccount],
+    });
+
+    let _takerTokenAccountA = await mintA.getAccountInfo(takerTokenAccountA);
+    let _takerTokenAccountB = await mintB.getAccountInfo(takerTokenAccountB);
+    let _initializerTokenAccountA = await mintA.getAccountInfo(initializerTokenAccountA);
+    let _initializerTokenAccountB = await mintB.getAccountInfo(initializerTokenAccountB);
+
+    // TODO: Assert if the PDA token account is closed
+
+    assert.ok(_takerTokenAccountA.amount.toNumber() == initializerAmount);
+    assert.ok(_initializerTokenAccountA.amount.toNumber() == 0);
+    assert.ok(_initializerTokenAccountB.amount.toNumber() == takerAmount);
+    assert.ok(_takerTokenAccountB.amount.toNumber() == 0);
+  });
+
+  // tokenAをvaultからinitializerに返金する
+  it("Initialize escrow and cancel escrow", async () => {
+    // initializerからvaultへ送金
+    await mintA.mintTo(initializerTokenAccountA, mintAuthority.publicKey, [mintAuthority], initializerAmount);
+    await program.rpc.initializeEscrow(
+      vault_account_bump,
+      new anchor.BN(initializerAmount),
+      new anchor.BN(takerAmount),
+      {
+        accounts: {
+          initializer: initializerMainAccount.publicKey,
+          vaultAccount: vault_account_pda,
+          mint: mintA.publicKey,
+          initializerDepositTokenAccount: initializerTokenAccountA,
+          initializerReceiveTokenAccount: initializerTokenAccountB,
+          escrowAccount: escrowAccount.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        },
+        instructions: [await program.account.escrowAccount.createInstruction(escrowAccount)],
+        signers: [escrowAccount, initializerMainAccount],
+      }
+    );
+
+    // 送金をキャンセルする
+    await program.rpc.cancelEscrow({
+      accounts: {
+        initializer: initializerMainAccount.publicKey,
+        initializerDepositTokenAccount: initializerTokenAccountA,
+        vaultAccount: vault_account_pda,
+        vaultAuthority: vault_authority_pda,
+        escrowAccount: escrowAccount.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      },
+      signers: [initializerMainAccount],
+    });
+
+    const _initializerTokenAccountA = await mintA.getAccountInfo(initializerTokenAccountA);
+    assert.ok(_initializerTokenAccountA.owner.equals(initializerMainAccount.publicKey));
+    assert.ok(_initializerTokenAccountA.amount.toNumber() == initializerAmount);
   });
 });
