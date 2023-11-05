@@ -18,7 +18,11 @@ pub mod anchor_escrow {
         taker_amount: u64,
     ) -> ProgramResult {
         // escrow_account(Programのデータの永続化)の初期化
+
+        //
         ctx.accounts.escrow_account.initializer_key = *ctx.accounts.initializer.key;
+
+        //デポジット
         ctx.accounts
             .escrow_account
             .initializer_deposit_token_account = *ctx
@@ -26,6 +30,8 @@ pub mod anchor_escrow {
             .initializer_deposit_token_account
             .to_account_info()
             .key;
+
+        //受け取る人
         ctx.accounts
             .escrow_account
             .initializer_receive_token_account = *ctx
@@ -33,8 +39,13 @@ pub mod anchor_escrow {
             .initializer_receive_token_account
             .to_account_info()
             .key;
+    
+        //送信する額？
         ctx.accounts.escrow_account.initializer_amount = initializer_amount;
+        //受け取る人？「takerは、注文を発注した側」
         ctx.accounts.escrow_account.taker_amount = taker_amount;
+
+
 
         // Authorityをinitializerからpdaへ設定
         let (vault_authority, _vault_authority_bump) =
